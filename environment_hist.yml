@@ -1,0 +1,19 @@
+name: pulse_rate_estimation
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  - isort
+  - autoflake
+  - black
+  - black-jupyter
+  - pylint
+  - flake8
+  - scikit-learn
+  - jupyterlab
+prefix: /home/uziel/miniconda3/envs/pulse_rate_estimation
