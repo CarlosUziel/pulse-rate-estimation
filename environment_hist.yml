@@ -16,4 +16,9 @@ dependencies:
   - flake8
   - scikit-learn
   - jupyterlab
+  - ipywidgets
+  - ipympl
+  - ca-certificates
+  - certifi
+  - openssl
 prefix: /home/uziel/miniconda3/envs/pulse_rate_estimation
