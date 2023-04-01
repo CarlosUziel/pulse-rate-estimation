@@ -1,8 +1,8 @@
-from copy import deepcopy
 from pathlib import Path
 from typing import Iterable, Tuple
 
 import numpy as np
+import pandas as pd
 import scipy as sp
 from matplotlib import pyplot as plt
 
@@ -57,75 +57,107 @@ def bandpass_filter(
 
 
 def get_optimal_ppg_peaks(
-    acc_mag_specs: np.array,
-    acc_mag_freqs: np.array,
-    ppg_specs: np.array,
-    ppg_freqs: np.array,
-    bpm_min_diff: float = 5.0,
-) -> Tuple[np.array, np.array]:
+    ppg: np.array,
+    acc_x: np.array,
+    acc_y: np.array,
+    acc_z: np.array,
+    fs: int = 125,
+    top_k: int = 7,
+) -> np.array:
     """Compute optimal PPG peaks from PPG and Accelerometer signals by avoiding
         spurious correlations.
 
     Args:
-        acc_mag_specs: Accelerometer magnitude signal spectrogram matrix.
-        acc_mag_freqs: Accelerometer magnitude frequencies.
-        ppg_specs: PPG signal spectrogram matrix.
-        ppg_freqs: PPG frequencies.
-        bpm_min_diff: Minimum acceptable difference between PPG and Accelerometer peak
-            frequencies, in beats per minute (bpm).
+        ppg: PPG signal.
+        acc_x: Accelerometer signal (X axis).
+        acc_y: Accelerometer signal (Y axis).
+        acc_z: Accelerometer signal (Z axis).
+        fs: Signals sampling rate, in Hz.
+        top_k: Select top K frequency candidates.
 
     Returns:
         Optimal PPG peaks.
     """
-    # 1. Get acc mag peaks
-    acc_mag_max_freq = acc_mag_freqs[np.argmax(acc_mag_specs, axis=0)]
+    # 1. Compute spectrograms for each signal
+    (
+        (ppg_spec, ppg_freqs, _, _),
+        (acc_x_spec, acc_x_freqs, _, _),
+        (acc_y_spec, acc_y_freqs, _, _),
+        (acc_z_spec, acc_z_freqs, _, _),
+    ) = [
+        plt.specgram(signal, Fs=fs, NFFT=8 * fs, noverlap=6 * fs)
+        for signal in (ppg, acc_x, acc_y, acc_z)
+    ]
+    plt.close("all")
 
-    # 2. Get ppg freqs for each window, sorted
-    ppg_specs_freqs = ppg_freqs[ppg_specs.argsort(axis=0)[::-1]]
+    # 2. Compute best frequency estimate for each window
+    ppg_peaks = []
+    for ppg_win, acc_x_win, acc_y_win, acc_z_win in zip(
+        ppg_spec.T, acc_x_spec.T, acc_y_spec.T, acc_z_spec.T
+    ):
+        # 2.1. Compute max frequency component of each accelerometer signal
+        acc_x_max_freq = acc_x_freqs[np.argmax(acc_x_win)]
+        acc_y_max_freq = acc_y_freqs[np.argmax(acc_y_win)]
+        acc_z_max_freq = acc_z_freqs[np.argmax(acc_z_win)]
 
-    # 3. Get absolute difference between frequencies
-    ppg_acc_diffs = np.abs(ppg_specs_freqs - acc_mag_max_freq)
+        # 2.2. Get top K PPG frequencies according to their magnitude
+        ppg_freq_sorted = ppg_freqs[ppg_win.argsort()[::-1]][:top_k]
 
-    # 4. Find best PPG peak alternative to acc mag peak
-    peak_inds = np.argmax(ppg_acc_diffs > bpm_min_diff / 60, axis=0)
-    optimal_ppg_peaks = ppg_specs_freqs[peak_inds, np.arange(len(peak_inds))]
+        # 2.3. Discard those frequencies present in the accelerometer
+        ppg_freq_filt = ppg_freq_sorted[
+            ~(
+                (ppg_freq_sorted == acc_x_max_freq)
+                | (ppg_freq_sorted == acc_y_max_freq)
+                | (ppg_freq_sorted == acc_z_max_freq)
+            )
+        ]
 
-    return optimal_ppg_peaks, ppg_specs_freqs
+        # 2.4. Select optimal PPG peak
+        if len(ppg_peaks) == 0:
+            ppg_peaks.append(ppg_freq_filt[0])
+        else:
+            # select closest to previous estimate
+            ppg_peaks.append(
+                ppg_freq_filt[np.abs(ppg_freq_filt - ppg_peaks[-1]).argmin()]
+            )
+
+    return np.array(ppg_peaks)
 
 
 def compute_bpm_confidence(
-    optimal_ppg_peaks: np.array,
-    ppg_specs: np.array,
-    ppg_specs_freqs: np.array,
-    conf_window: float = 10,
+    bps_estimates: np.array,
+    ppg: np.array,
+    fs: int = 125,
 ) -> np.array:
     """
     Compute BPM estimates confidence scores by summing up the frequency spectrum within
         a window around the pulse rate estimate and dividing it by the sum of the entire
-        spectrum.
+        spectrum. Use first harmonic as window size.
 
     Args:
-        optimal_ppg_peaks: PPG peaks, which are the BPM estimates in seconds.
-        ppg_specs: PPG signal spectrogram matrix.
-        ppg_specs_freqs: PPG signal frequencies for each window, sorted.
-        conf_window: Size of the window in one direction used to compute peak power.
+        bps_estimates: PPG peaks, which are the BPM estimates in seconds.
+        ppg: PPG signal.
+        fs: Signals sampling rate, in Hz.
 
     Returns:
         Confidence scores.
     """
-    # 1. Ger confidence  windows
-    lower_bound = optimal_ppg_peaks - conf_window / 60
-    upper_bound = optimal_ppg_peaks + conf_window / 60
-    confidence_windows = (lower_bound < ppg_specs_freqs) & (
-        ppg_specs_freqs < upper_bound
-    )
+    # 0. PPG Spectrogram
+    ppg_spec, ppg_freqs, _, _ = plt.specgram(ppg, Fs=fs, NFFT=8 * fs, noverlap=6 * fs)
+    plt.close("all")
 
-    # 2. Compute energy around and outside of the PPG peak
-    ppg_specs_windows = deepcopy(ppg_specs)
-    ppg_specs_windows[confidence_windows] = 0
+    # 1. Compute confidence per estimated peak
+    confs = []
+    for bps_est, ppg_win in zip(bps_estimates, ppg_spec.T):
+        # 1.1. Get frequencies around estimate (within window)
+        lower_bound = bps_est - (bps_est * 2)
+        upper_bound = bps_est + (bps_est * 2)
+        conf_win = (lower_bound < ppg_freqs) & (ppg_freqs < upper_bound)
 
-    # 3. Compute and return confidence scores
-    return np.sum(ppg_specs_windows, axis=0) / np.sum(ppg_specs, axis=0)
+        # 1.2. Compute confidence
+        confs.append(np.sum(ppg_win[conf_win]) / np.sum(ppg_win))
+
+    return np.array(confs)
 
 
 def run_pulse_rate_estimation(
@@ -133,8 +165,6 @@ def run_pulse_rate_estimation(
     ref_file: Path,
     fs: int = 125,
     passband: Tuple[float, float] = (40, 240),
-    bpm_min_diff: float = 5,
-    conf_window: float = 10,
 ):
     """Estimate pulse rate from PPG and Accelerometer data.
 
@@ -143,52 +173,29 @@ def run_pulse_rate_estimation(
         ref_file: File containing ground truth pulse rate.
         fs: Signals sampling rate, in Hz.
         passband: Passband, in Hz, used for filtering the signals.
-        bpm_min_diff: Minimum acceptable difference between PPG and Accelerometer peak
-            frequencies, in beats per minute (bpm).
     """
     # 0. Setup
     ppg, acc_x, acc_y, acc_z = load_troika_file(signal_file)
-    acc_mag = np.sqrt(np.sum(np.square(np.vstack((acc_x, acc_y, acc_z))), axis=0))
     bpm_true = sp.io.loadmat(ref_file)["BPM0"][..., 0]
     passband = np.array(passband) / 60
 
     # 1. Pre-processing
-    ppg_filt, acc_mag_filt = [
-        bandpass_filter(sig_data, passband, fs) for sig_data in (ppg, acc_mag)
+    ppg_filt, acc_x_filt, acc_y_filt, acc_z_filt = [
+        bandpass_filter(sig_data, passband, fs)
+        for sig_data in (ppg, acc_x, acc_y, acc_z)
     ]
 
-    # 2. Calculate spectrograms
-    ppg_specs, ppg_freqs, _, _ = plt.specgram(
-        ppg_filt, Fs=fs, NFFT=8 * fs, noverlap=6 * fs
-    )
-    plt.clf()
-    acc_mag_specs, acc_mag_freqs, _, _ = plt.specgram(
-        acc_mag_filt, Fs=fs, NFFT=8 * fs, noverlap=6 * fs
-    )
-    plt.clf()
+    # 2. Get optimal PPG peaks
+    bps_est = get_optimal_ppg_peaks(ppg_filt, acc_x_filt, acc_y_filt, acc_z_filt)
 
-    # 3. Get optimal PPG peaks
-    optimal_ppg_peaks, ppg_specs_freqs = get_optimal_ppg_peaks(
-        acc_mag_specs,
-        acc_mag_freqs,
-        ppg_specs,
-        ppg_freqs,
-        bpm_min_diff,
-    )
+    # 3. Compute estimated bpm
+    bpm_est = bps_est * 60
 
-    # 4. Compute estimated bpm
-    bpm_est = optimal_ppg_peaks * 60
-
-    # 5. Compute error
+    # 4. Compute error
     bpm_error = np.abs(bpm_est - bpm_true)
 
-    # 6. Get confidence scores
-    confidence_scores = compute_bpm_confidence(
-        optimal_ppg_peaks,
-        ppg_specs,
-        ppg_specs_freqs,
-        conf_window,
-    )
+    # 5. Get confidence scores
+    confidence_scores = compute_bpm_confidence(bps_est, ppg_filt, fs)
 
     return bpm_error, confidence_scores
 
@@ -248,4 +255,9 @@ def evaluate():
     # 3. Aggregate and return final error metric
     errs = np.hstack(errs)
     confs = np.hstack(confs)
+
+    pd.DataFrame(data=[errs, confs], index=["errs", "confs"]).transpose().to_csv(
+        "errs_confs.csv"
+    )
+
     return aggregate_error_metrics(errs, confs)
