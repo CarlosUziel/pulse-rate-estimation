@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Iterable, Tuple
 
 import numpy as np
-import pandas as pd
 import scipy as sp
 from matplotlib import pyplot as plt
 
@@ -255,9 +254,5 @@ def evaluate():
     # 3. Aggregate and return final error metric
     errs = np.hstack(errs)
     confs = np.hstack(confs)
-
-    pd.DataFrame(data=[errs, confs], index=["errs", "confs"]).transpose().to_csv(
-        "errs_confs.csv"
-    )
 
     return aggregate_error_metrics(errs, confs)
