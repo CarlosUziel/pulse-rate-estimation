@@ -5,7 +5,7 @@
 <div align="center">
 
   <h3 align="center">Pulse Rate Estimation using Wearable Data</h3>
-  <img src="images/ppg_spectrogram.png" alt="Aibnb locations" width="700" height="350">
+  <img src="images/ppg_spectrogram.png" alt="PPG Spectrogram" width="700" height="350">
 
 </div>
 
